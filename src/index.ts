@@ -23,7 +23,7 @@ import {
   parseArguments,
 } from "./config/index.ts";
 import { initializeDatabase } from "./database/index.ts";
-import { startWebhookServer } from "./webhooks/index.ts";
+// import { startWebhookServer } from "./webhooks/index.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -173,7 +173,7 @@ const startAgents = async () => {
   }
 
   // Start Webhook Listener for Typeform feedback
-  startWebhookServer();
+  // startWebhookServer();
 };
 
 startAgents().catch((error) => {
