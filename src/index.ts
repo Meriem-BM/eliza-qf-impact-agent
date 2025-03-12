@@ -23,7 +23,8 @@ import {
   parseArguments,
 } from "./config/index.ts";
 import { initializeDatabase } from "./database/index.ts";
-// import { startWebhookServer } from "./webhooks/index.ts";
+import { processTypeformResponses } from "./utils/twitterHandler.ts";
+import { setupDatabase } from "./db-helper/setupDatabase.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,6 +89,8 @@ async function startAgent(character: Character, directClient: DirectClient) {
     const cache = initializeDbCache(character, db);
     const runtime = createAgent(character, db, cache, token);
 
+    await setupDatabase();
+
     await runtime.initialize();
 
     runtime.clients = await initializeClients(character, runtime);
@@ -135,11 +138,9 @@ const startAgents = async () => {
   let charactersArg = args.characters || args.character;
   let characters = [character];
 
-  console.log("charactersArg", charactersArg);
   if (charactersArg) {
     characters = await loadCharacters(charactersArg);
   }
-  console.log("characters", characters);
   try {
     for (const character of characters) {
       await startAgent(character, directClient as DirectClient);
@@ -172,8 +173,9 @@ const startAgents = async () => {
     chat();
   }
 
-  // Start Webhook Listener for Typeform feedback
-  // startWebhookServer();
+  setInterval(async () => {
+    await processTypeformResponses();
+  }, 1 * 60 * 1000);
 };
 
 startAgents().catch((error) => {

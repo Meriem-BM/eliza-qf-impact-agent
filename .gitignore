@@ -3,6 +3,9 @@ dist
 !index.ts
 !character.ts
 !twitterHandler.ts
+!typeform.ts
+!setupDatabase.ts
+!cacheHelper.ts
 .env
 node_modules
 dist/
