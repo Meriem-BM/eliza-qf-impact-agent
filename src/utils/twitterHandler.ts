@@ -10,14 +10,6 @@ import {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function generateTweet(response: any): Promise<string | null> {
-  const responseId = response.response_id;
-
-  // Skip if this response has already been processed
-  if (await isResponseProcessed(responseId)) {
-    console.log(`Skipping duplicate response: ${responseId}`);
-    return null;
-  }
-
   const projectName =
     response.answers.find((a: any) => a.field.id === "phIyQgeo2IDg")?.text ||
     "A QF project";
@@ -71,7 +63,8 @@ export async function generateTweet(response: any): Promise<string | null> {
   - **Project Link**: ${projectLink ? projectLink : "N/A"}
   - **Additional Comments**: ${additionalComments ? additionalComments : "None"}
 
-  Generate a high-quality tweet that follows these guidelines, and with a maximum length of 280 characters.
+  Generate a high-quality tweet that follows these guidelines.
+  PS ❗️: The tweet length should be strictly under 280 characters.
   `;
 
   try {
@@ -89,10 +82,12 @@ export async function generateTweet(response: any): Promise<string | null> {
   }
 }
 
-export async function postTweet(content: string): Promise<boolean> {
+export async function postTweet(
+  content: string,
+  responseId: string
+): Promise<boolean> {
   try {
     const scraper = new Scraper();
-
     const username = process.env.TWITTER_USERNAME;
     const password = process.env.TWITTER_PASSWORD;
 
@@ -130,18 +125,27 @@ export async function postTweet(content: string): Promise<boolean> {
     }
 
     // Send tweet
-    elizaLogger.log("Attempting to send tweet:", content);
+    console.log("Attempting to send tweet:", content);
 
     const result = await scraper.sendTweet(content);
     const body = await result.json();
 
     elizaLogger.log("Tweet response:", body);
 
+    // ✅ Handle Twitter API error 186 (Too long tweet)
     if (body.errors) {
-      elizaLogger.error(
-        `Twitter API error (${body.errors[0].code}): ${body.errors[0].message}`
-      );
-      return false;
+      if (body.errors[0].code === 186) {
+        elizaLogger.warn(
+          "Tweet too long! Asking AI to generate a shorter version..."
+        );
+        content = await regenerateShortTweet(content);
+        return postTweet(content, responseId);
+      } else {
+        elizaLogger.error(
+          `Twitter API error (${body.errors[0].code}): ${body.errors[0].message}`
+        );
+        return false;
+      }
     }
 
     if (!body?.data?.create_tweet?.tweet_results?.result) {
@@ -149,9 +153,10 @@ export async function postTweet(content: string): Promise<boolean> {
       return false;
     }
 
+    await markResponseAsProcessed(responseId);
     return true;
   } catch (error) {
-    elizaLogger.error("Error posting tweet:", error);
+    console.log("Error posting tweet: ❌", error);
     return false;
   }
 }
@@ -182,14 +187,41 @@ export async function processTypeformResponses() {
 
     // ✅ Check if response has already been processed in the database
     if (await isResponseProcessed(responseId)) {
-      elizaLogger.log(`Skipping duplicate response: ${responseId}`);
+      console.log(`Skipping duplicate response: ${responseId}`);
       continue;
     }
 
     const tweet = await generateTweet(response);
     if (tweet) {
-      await postTweet(tweet);
-      await markResponseAsProcessed(responseId); // ✅ Store processed response in DB
+      await postTweet(tweet, responseId);
     }
+  }
+}
+
+export async function regenerateShortTweet(longTweet: string): Promise<string> {
+  try {
+    const prompt = `
+      Your task is to shorten the following tweet while keeping the message intact and engaging.
+      - Keep it **under 280 characters**.
+      - Preserve key information, impact details, and hashtags.
+      - Make sure it’s readable and still impactful.
+
+      ## Original Tweet:
+      "${longTweet}"
+
+      ## Shorter Version:
+    `;
+
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [{ role: "system", content: prompt }],
+      max_tokens: 100,
+      temperature: 0.5,
+    });
+
+    return aiResponse.choices[0].message.content.trim().replace(/"/g, "");
+  } catch (error) {
+    console.error("Error generating shorter tweet:", error);
+    return longTweet;
   }
 }
