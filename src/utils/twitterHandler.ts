@@ -9,7 +9,7 @@ import {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export async function generateTweet(response: any): Promise<string | null> {
+export async function generateTweet(response: any): Promise<string[] | null> {
   const projectName =
     response.answers.find((a: any) => a.field.id === "phIyQgeo2IDg")?.text ||
     "A QF project";
@@ -34,21 +34,21 @@ export async function generateTweet(response: any): Promise<string | null> {
     response.answers.find((a: any) => a.field.id === "8NDFqr4OnyPq")?.boolean ||
     false;
 
-  // Skip if the user opted out of sharing
   if (!allowTweet) {
     console.log(`Skipping tweet for ${projectName} (user opted out).`);
     return null;
   }
 
   const prompt = `
-  You are an expert social media assistant for a Web3 funding platform. Your task is to generate a compelling and engaging tweet based on a project's feedback from a Quadratic Funding (QF) round.
+  You are an expert social media assistant for a Web3 funding platform. Your task is to generate an engaging tweet or Twitter thread based on a project's feedback from a Quadratic Funding (QF) round.
 
   ## Context:
   A project has received funding through QF, and the project owner has shared their impact story via a feedback form.
 
   ## Tweet Requirements:
-  - Keep it **under 280 characters**.
-  - Start with **an engaging hook** (e.g., "🚀 Another QF success story!", "🌟 See how Web3 funding changed lives!", etc.).
+  - If possible, generate a **single tweet under 280 characters**.
+  - If the story **cannot fit in 280 characters**, format it as a Twitter **thread** (multiple tweets).
+  - Start with an **engaging hook** (e.g., "🚀 Another QF success story!", "🌟 See how Web3 funding changed lives!", etc.).
   - Mention the **project name** naturally.
   - Summarize the **impact of the funding** in an exciting way.
   - Include **specific positive changes** the funding enabled.
@@ -63,27 +63,53 @@ export async function generateTweet(response: any): Promise<string | null> {
   - **Project Link**: ${projectLink ? projectLink : "N/A"}
   - **Additional Comments**: ${additionalComments ? additionalComments : "None"}
 
-  Generate a high-quality tweet that follows these guidelines.
-  PS ❗️: The tweet length should be strictly under 280 characters.
+  If the tweet is too long for a single post, split it into a **Twitter thread** and return an **array** of tweets in order.
+  Ensure each tweet **does not exceed 280 characters**.
+
+  ## Example Outputs:
+  **Single Tweet (if possible)**:
+  "🚀 Another QF success story! ${projectName} used QF funding to ${impactSummary}. Thanks to support, they achieved ${specificChanges}. Learn more: ${projectLink} #QuadraticFunding"
+
+  **Thread (if needed)**:
+  [
+    "🚀 Another QF success story! ${projectName} used QF funding to ${impactSummary}.",
+    "Thanks to support, they achieved ${specificChanges}. Their work is creating real impact! 🌍",
+    "Learn more about ${projectName} here: ${projectLink} #QuadraticFunding"
+  ]
+
+  **Now generate the best tweet or thread for this impact story.**
   `;
 
   try {
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [{ role: "system", content: prompt }],
-      max_tokens: 100,
+      max_tokens: 300,
       temperature: 0.5,
     });
 
-    return aiResponse.choices[0].message.content.trim().replace(/"/g, "");
+    const generatedText = aiResponse.choices[0].message.content.trim();
+
+    // Ensure AI returns a properly formatted thread
+    let tweets: string[];
+
+    try {
+      tweets = JSON.parse(generatedText);
+      if (!Array.isArray(tweets)) throw new Error("Not an array");
+    } catch (error) {
+      // If AI doesn't return a valid array, treat it as a single tweet
+      tweets = [generatedText];
+    }
+
+    return tweets;
   } catch (error) {
     console.error("Error generating tweet:", error);
-    return `🌟 ${projectName} made a huge impact! Thanks to QF funding, they ${impactSummary}. Their work led to ${specificChanges}.`;
+    return null;
   }
 }
 
 export async function postTweet(
-  content: string,
+  tweets: string[],
   responseId: string
 ): Promise<boolean> {
   try {
@@ -124,33 +150,24 @@ export async function postTweet(
       throw new Error("Failed to authenticate with cookies");
     }
 
-    // Send tweet
-    console.log("Attempting to send tweet:", content);
+    let replyToId = null;
+    for (const tweet of tweets) {
+      const result = await scraper.sendTweet(tweet, replyToId);
+      const body = await result.json();
 
-    const result = await scraper.sendTweet(content);
-    const body = await result.json();
-
-    elizaLogger.log("Tweet response:", body);
-
-    // ✅ Handle Twitter API error 186 (Too long tweet)
-    if (body.errors) {
-      if (body.errors[0].code === 186) {
-        elizaLogger.warn(
-          "Tweet too long! Asking AI to generate a shorter version..."
-        );
-        content = await regenerateShortTweet(content);
-        return postTweet(content, responseId);
-      } else {
+      if (body.errors) {
         elizaLogger.error(
           `Twitter API error (${body.errors[0].code}): ${body.errors[0].message}`
         );
         return false;
       }
-    }
 
-    if (!body?.data?.create_tweet?.tweet_results?.result) {
-      elizaLogger.error("Failed to post tweet: No tweet result in response");
-      return false;
+      if (!body?.data?.create_tweet?.tweet_results?.result) {
+        elizaLogger.error("Failed to post tweet: No tweet result in response");
+        return false;
+      }
+
+      replyToId = body.data.create_tweet.tweet_results.result.rest_id;
     }
 
     await markResponseAsProcessed(responseId);
@@ -185,7 +202,7 @@ export async function processTypeformResponses() {
       continue;
     }
 
-    // ✅ Check if response has already been processed in the database
+    // Check if response has already been processed in the database
     if (await isResponseProcessed(responseId)) {
       console.log(`Skipping duplicate response: ${responseId}`);
       continue;
