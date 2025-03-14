@@ -204,7 +204,6 @@ export async function processTypeformResponses() {
 
     // Check if response has already been processed in the database
     if (await isResponseProcessed(responseId)) {
-      console.log(`Skipping duplicate response: ${responseId}`);
       continue;
     }
 
